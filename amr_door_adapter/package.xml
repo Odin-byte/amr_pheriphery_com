@@ -1,13 +1,14 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>door_adapter</name>
+  <name>amr_door_adapter</name>
   <version>0.0.0</version>
-  <description>A template for an RMF door adapter</description>
-  <maintainer email=""></maintainer>
+  <description>An RMF door adapter for advantech box controlled doors</description>
+  <maintainer email="dominik.werman@4am-robotics.com">Dominik Werman</maintainer>
   <license>Apache License 2.0</license>
 
   <exec_depend>rmf_door_msgs</exec_depend>
+  <exec_depend>amr_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

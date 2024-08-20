@@ -3,13 +3,13 @@
 
 ### template ###
 door:
-  name: "example_door"
-  api_endpoint: "http://127.0.0.1:8888/"
-  header_key: "example_key"
-  header_value: "example_header_value"
-  door_id: "example_door_id"
+  name: "Door_East"
+  url: "10.0.1.81"
+  port: "1080"
+  io_pin: 0
+  door_id: "Door_East"
   door_signal_period: 3.0 # Seconds
-  door_close_feature: False 
+  door_close_feature: True 
 
 door_subscriber:
   topic_name: "adapter_door_requests"

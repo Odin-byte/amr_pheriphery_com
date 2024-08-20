@@ -1,6 +1,6 @@
 from setuptools import setup
 
-package_name = 'door_adapter'
+package_name = 'amr_door_adapter'
 
 setup(
     name=package_name,
@@ -20,7 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'door_adapter = door_adapter.door_adapter:main'
+            'door_adapter = amr_door_adapter.door_adapter:main',
         ],
     },
 )
