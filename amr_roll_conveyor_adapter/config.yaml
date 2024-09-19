@@ -1,0 +1,22 @@
+ 
+# RMF conveyor parameters
+
+### template ###
+conveyor:
+  name: "Conveyor_East"
+  url: "10.0.1.81"
+  port: "1080"
+  io_pin: 0
+  on_time: 4
+  conveyor_id: "conveyor_East"
+
+conveyor_subscribers:
+  dispense_request_topic: "dispenser_requests"
+  ingest_request_topic: "ingestor_requests"
+
+coveyor_publishers:
+  dispense_result_topic: "dispenser_results"
+  dispenser_state_topic: "dispenser_states"
+  ingest_result_topic: "ingestor_results"
+  ingestor_state_topic: "ingestor_states"
+  state_publish_period: 2

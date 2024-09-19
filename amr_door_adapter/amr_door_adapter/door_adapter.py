@@ -1,6 +1,5 @@
 import sys
 import yaml
-import argparse
 
 import time
 import threading
@@ -8,8 +7,6 @@ import threading
 import rclpy
 from amr_door_adapter.DoorClientAPI import DoorClientAPI
 from rclpy.node import Node
-from rclpy.time import Time
-from rclpy.action import ActionClient
 from amr_msgs.srv import SetAdvantechOutput
 from rmf_door_msgs.msg import DoorRequest, DoorState, DoorMode
 from rcl_interfaces.msg import ParameterDescriptor
@@ -100,11 +97,10 @@ class DoorAdapter(Node):
         # Once the door command is posted to the door API,
         # the door will be opened and then close after 5 secs
         while self.open_door:
-            self.get_logger().info("Requesting to open door")
+            self.get_logger().debug("Requesting to open door")
             success = self.api.open_door()
-            self.get_logger().info("We are back")
             if success:
-                self.get_logger().info(
+                self.get_logger().debug(
                     f"Request to open door [{self.door_name}] is successful"
                 )
             else:
@@ -134,7 +130,7 @@ class DoorAdapter(Node):
         # If door node receive close request, the door adapter will stop sending open command to API
         # check DoorRequest msg whether the door name of the request is same as the current door. If not, ignore the request
         if msg.door_name == self.door_name:
-            self.get_logger().info(
+            self.get_logger().debug(
                 f"Door mode [{msg.requested_mode.value}] requested by {msg.requester_id}"
             )
             if msg.requested_mode.value == DoorMode.MODE_OPEN:
@@ -142,16 +138,15 @@ class DoorAdapter(Node):
                 self.open_door = True
                 self.check_status = True
                 if self.door_close_feature:
-                    self.get_logger().info("Requesting to open door")
+                    self.get_logger().debug("Requesting to open door")
                     self.api.open_door()
-                    self.get_logger().info("We are back!")
                 else:
                     t = threading.Thread(target=self.door_open_command_request)
                     t.start()
             elif msg.requested_mode.value == DoorMode.MODE_CLOSED:
                 # close door implementation
                 self.open_door = False
-                self.get_logger().info("Close Command to door received")
+                self.get_logger().debug("Close Command to door received")
                 if self.door_close_feature:
                     self.api.close_door()
             else:
