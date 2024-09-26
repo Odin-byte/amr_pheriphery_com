@@ -1,6 +1,8 @@
 import yaml
 import threading
 import sys
+import uuid
+import time
 
 import rclpy
 from rclpy.node import Node, MutuallyExclusiveCallbackGroup
@@ -53,10 +55,7 @@ class ConveyorAdapter(Node):
             raise
 
         # Get value from config file
-        self.conveyor_name = config_yaml["conveyor"]["name"]
         self.conveyor_id = config_yaml["conveyor"]["conveyor_id"]
-        self.conveyor_on_time = config_yaml["conveyor"]["on_time"]
-
         self.host = config_yaml["conveyor"]["host"]
         self.port = config_yaml["conveyor"]["port"]
         self.pin = config_yaml["conveyor"]["io_pin"]
@@ -69,6 +68,7 @@ class ConveyorAdapter(Node):
         self.ingeste_request_sub = self.create_subscription(IngestorRequest, ingest_request_topic, self.ingest_request_cb, 10)
 
         fleet_state_cb_group = MutuallyExclusiveCallbackGroup()
+        update_cb_group = MutuallyExclusiveCallbackGroup()
 
         self.fleet_state_sub = self.create_subscription(FleetState, "fleet_states", self._fleet_state_cb, 5, callback_group=fleet_state_cb_group)
 
@@ -87,7 +87,7 @@ class ConveyorAdapter(Node):
 
         self.mode_request_pub = self.create_publisher(ModeRequest, "robot_mode_requests", 10)
 
-        self.update_timer = self.create_timer(state_publish_period, self.update_cb)
+        self.update_timer = self.create_timer(state_publish_period, self.update_cb, callback_group=update_cb_group)
 
 
         # Client to communicate with the advantech service
@@ -99,6 +99,7 @@ class ConveyorAdapter(Node):
             self.get_logger().error("Advantech Set Output Service not ready!")
         
         # default conveyor state
+        self.conveyor_state_lock = threading.Lock()
         self.current_dispenser_state = 0 # idle
         self.current_ingestor_state = 0 # idle
         
@@ -122,11 +123,11 @@ class ConveyorAdapter(Node):
         # Publish the states of the conveyor
         
         self.publish_conveyor_state()
-
-        if self.current_dispenser_state == 1 or self.current_ingestor_state == 1:
-            self.get_logger().info(f"Current dispenser state: {self.current_dispenser_state} and current ingestor state: {self.current_ingestor_state}")
-            self.get_logger().info("Conveyor is currently busy. Skipping execution part...")
-            return
+        with self.conveyor_state_lock:
+            if self.current_dispenser_state == 1 or self.current_ingestor_state == 1:
+                self.get_logger().info(f"Current dispenser state: {self.current_dispenser_state} and current ingestor state: {self.current_ingestor_state}")
+                self.get_logger().info("Conveyor is currently busy. Skipping execution part...")
+                return
 
         # Handle open request
         if self.is_request_open and self.is_dispense_request == True:
@@ -134,38 +135,14 @@ class ConveyorAdapter(Node):
 
         if self.is_request_open and self.is_dispense_request == False:
             self.handle_ingest()
-            # This is where we start tomorrow
-            self.send_ingestor_response(IngestorResult.ACKNOWLEDGED)
-
-            self.current_ingestor_state = 1
-
-            # Send request for dispending an item to conveyor
-            req_ingest = SetAdvantechOutput.Request()
-            req_ingest.host = self.host
-            req_ingest.port = self.port
-            req_ingest.indices = [0,1]
-            req_ingest.values = [1,0]
-
-
-            future = self.set_client.call_async(req_ingest)
-            future.add_done_callback(self.conveyor_start_cb)
 
     def conveyor_start_cb(self, future):
         """If request was successful wait for the robot tool before sending an off request"""
         if future.result().success:
-
-            if self.is_dispense_request:
-                self.get_logger().info(f"Waiting for Robot {self.latest_dispens_req.transporter_id} to finish loading.")
-                # Send tool cmd
-                self._turn_on_onboard_tool(dispense_item=self.is_dispense_request)
-                # self._wait_for_robot_tool(robot_id=self.latest_dispens_req.transporter_id)
-                
-            else:
-                self.get_logger().info(f"Waiting for Robot {self.latest_ingestion_req.transporter_id} to finish unloading.")
-                # Send tool cmd
-                self._turn_on_onboard_tool(dispense_item=self.is_dispense_request)
-                # self._wait_for_robot_tool(robot_id=self.latest_ingestion_req.transporter_id)
-
+            # Wait for the robot to finish docking cleanly by waiting for a second
+            time.sleep(1)
+            
+            self._turn_on_onboard_tool(self.is_dispense_request)
             self.get_logger().info("Done waiting!")
             # Send cmd to turn off conveyor
             stop_req = SetAdvantechOutput.Request()
@@ -180,35 +157,38 @@ class ConveyorAdapter(Node):
         else:
             self.get_logger().info("Failed!")
             if self.is_dispense_request == True:
-                self.current_dispenser_state = 2 # offline
                 self.send_dispenser_response(DispenserResult.FAILED)
             else:
-                self.current_ingestor_state = 2 # offline
                 self.send_ingestor_response(IngestorResult.FAILED)
+            self.current_dispenser_state = 2 # offline
+            self.current_ingestor_state = 2 # offline
+
 
     def conveyor_done_cb(self, future):
         """If request was sucessful return a response to the request feedback topic"""
         if future.result().success:
 
             if self.is_dispense_request == True:
-                self.current_dispenser_state = 0
                 self.previous_dispense_requests[self.latest_dispens_req.request_guid] = True
                 self.send_dispenser_response(DispenserResult.SUCCESS)
             else:
-                self.current_ingestor_state = 0
                 self.previous_ingestion_requests[self.latest_ingestion_req.request_guid] = True
                 self.send_ingestor_response(IngestorResult.SUCCESS)
+
+            self.current_dispenser_state = 0
+            self.current_ingestor_state = 0
 
         else:
 
             if self.is_dispense_request == True:
-                self.current_dispenser_state = 2 # offline
                 self.previous_dispense_requests[self.latest_dispens_req.request_guid] = False
                 self.send_dispenser_response(DispenserResult.FAILED)
             else:
-                self.current_ingestor_state = 2 # offline
                 self.previous_ingestion_requests[self.latest_ingestion_req.request_guid] = False
                 self.send_ingestor_response(IngestorResult.FAILED)
+                
+            self.current_dispenser_state = 2 # offline
+            self.current_ingestor_state = 2 # offline
 
         # Reset the flag and remove unused msgs
         self.is_request_open = False
@@ -220,13 +200,12 @@ class ConveyorAdapter(Node):
         Args:
             msg (RMF DispenserRequest msg): ROS2 msg provided by RMF
         """
-        self.latest_dispens_req = msg
 
         # Check if this request is for this conveyor
-        if self.latest_dispens_req.target_guid.rstrip(",.") != self.conveyor_id.rstrip(",."):
-            self.get_logger().debug(f"This is not for me, because the request was for {repr(self.latest_dispens_req.target_guid)} and I am {repr(self.conveyor_id)}")
+        if msg.target_guid.rstrip(",.") != self.conveyor_id.rstrip(",."):
+            self.get_logger().debug(f"This is not for me, because the request was for {repr(msg.target_guid)} and I am {repr(self.conveyor_id)}")
             return
-        
+        self.latest_dispens_req = msg
         # Check wether or not the request was already done
         if self.latest_dispens_req.request_guid in self.previous_dispense_requests:
             if self.previous_dispense_requests[self.latest_dispens_req.request_guid]:
@@ -244,13 +223,12 @@ class ConveyorAdapter(Node):
         Args:
             msg (RMF IngestorRequest msg): ROS2 msg provided by RMF
         """
-        self.latest_ingestion_req = msg
 
         # Check if this request is for this conveyor
-        if self.latest_ingestion_req.target_guid.rstrip(",.") != self.conveyor_id.rstrip(",."):
-            self.get_logger().debug(f"This is not for me, because the request was for {repr(self.latest_dispens_req.target_guid)} and I am {repr(self.conveyor_id)}")
+        if msg.target_guid.rstrip(",.") != self.conveyor_id.rstrip(",."):
+            self.get_logger().debug(f"This is not for me, because the request was for {repr(msg.target_guid)} and I am {repr(self.conveyor_id)}")
             return
-
+        self.latest_ingestion_req = msg
         # Check wether or not the request was already done
         if self.latest_ingestion_req.request_guid in self.previous_ingestion_requests:
             if self.previous_ingestion_requests[self.latest_ingestion_req.request_guid]:
@@ -313,61 +291,62 @@ class ConveyorAdapter(Node):
 
     def publish_conveyor_state(self): 
         # Publish the dispenser state of the conveyor
-        dispenser_state_msg = DispenserState()
+        with self.conveyor_state_lock:
+            dispenser_state_msg = DispenserState()
 
-        dispenser_state_msg.time = self.get_clock().now().to_msg()
-        dispenser_state_msg.guid = self.conveyor_id
-        if self.set_client.service_is_ready() == False:
-            dispenser_state_msg.mode = 2 # offline
-        else:
-            dispenser_state_msg.mode = self.current_dispenser_state
-        
-        if self.is_request_open and self.is_dispense_request == True:
-            dispenser_state_msg.request_guid_queue = [self.current_guid_for_dispense]
-        else:
-            dispenser_state_msg.request_guid_queue = []
+            dispenser_state_msg.time = self.get_clock().now().to_msg()
+            dispenser_state_msg.guid = self.conveyor_id
+            if self.set_client.service_is_ready() == False:
+                dispenser_state_msg.mode = 2 # offline
+            else:
+                dispenser_state_msg.mode = self.current_dispenser_state
+            
+            if self.is_request_open and self.is_dispense_request == True:
+                dispenser_state_msg.request_guid_queue = [self.current_guid_for_dispense]
+            else:
+                dispenser_state_msg.request_guid_queue = []
 
         self.dispenser_state_pub.publish(dispenser_state_msg)
 
 
         # Publish the ingestor state of the conveyor
-        ingestor_state_msg = IngestorState()
+        with self.conveyor_state_lock:
+            ingestor_state_msg = IngestorState()
 
-        ingestor_state_msg.time = self.get_clock().now().to_msg()
-        ingestor_state_msg.guid = self.conveyor_id
-        if self.set_client.service_is_ready() == False:
-            ingestor_state_msg.mode = 2 # offline
-        else:
-            ingestor_state_msg.mode = self.current_ingestor_state
-        
-        if self.is_request_open and self.is_dispense_request == False:
-            ingestor_state_msg.request_guid_queue = [self.current_guid_for_ingestion]
-        else:
-            ingestor_state_msg.request_guid_queue = []
+            ingestor_state_msg.time = self.get_clock().now().to_msg()
+            ingestor_state_msg.guid = self.conveyor_id
+            if self.set_client.service_is_ready() == False:
+                ingestor_state_msg.mode = 2 # offline
+            else:
+                ingestor_state_msg.mode = self.current_ingestor_state
+            
+            if self.is_request_open and self.is_dispense_request == False:
+                ingestor_state_msg.request_guid_queue = [self.current_guid_for_ingestion]
+            else:
+                ingestor_state_msg.request_guid_queue = []
 
         self.ingestor_state_pub.publish(ingestor_state_msg)
 
-# We might still need this
     def _fleet_state_cb(self, msg):
         self.latest_fleet_state = msg
-
-        # Return early if there is no open request
-        if not self.is_request_open:
-            return
-
-        # Determine transporter ID based on the active request type
-        if self.is_dispense_request:
-            if self.latest_dispens_req:
-                transporter_id = self.latest_dispens_req.transporter_id
-            else:
-                self.get_logger().warning("Dispense request expected but not found.")
+        with self.conveyor_state_lock:
+            # Return early if there is no open request
+            if not self.is_request_open:
                 return
-        else:
-            if self.latest_ingestion_req:
-                transporter_id = self.latest_ingestion_req.transporter_id
+
+            # Determine transporter ID based on the active request type
+            if self.is_dispense_request:
+                if self.latest_dispens_req:
+                    transporter_id = self.latest_dispens_req.transporter_id
+                else:
+                    self.get_logger().warning("Dispense request expected but not found.")
+                    return
             else:
-                self.get_logger().warning("Ingestion request expected but not found.")
-                return
+                if self.latest_ingestion_req:
+                    transporter_id = self.latest_ingestion_req.transporter_id
+                else:
+                    self.get_logger().warning("Ingestion request expected but not found.")
+                    return
 
         # Check if the robot tool mode has changed
         for robot in self.latest_fleet_state.robots:
@@ -394,17 +373,18 @@ class ConveyorAdapter(Node):
     def _turn_on_onboard_tool(self, dispense_item):
         # Tell the robot to dock with the correct orientation based on the item / slot in the request
         mode_request_msg = ModeRequest()
+        new_mode_id = str(uuid.uuid4()) + self.conveyor_id
 
         if dispense_item:
             mode_request_msg.fleet_name = self.latest_dispens_req.transporter_type
             mode_request_msg.robot_name = self.latest_dispens_req.transporter_id
-            mode_request_msg.task_id = self.latest_dispens_req.request_guid
+            mode_request_msg.task_id = new_mode_id
 
             items = self.latest_dispens_req.items
         else:
             mode_request_msg.fleet_name = self.latest_ingestion_req.transporter_type
             mode_request_msg.robot_name = self.latest_ingestion_req.transporter_id
-            mode_request_msg.task_id = self.latest_ingestion_req.request_guid
+            mode_request_msg.task_id = new_mode_id
 
             items = self.latest_ingestion_req.items
 
@@ -437,15 +417,15 @@ class ConveyorAdapter(Node):
         mode_request_msg.mode = mode_msg
         mode_request_msg.parameters = [tool_cmd_msg]
 
-        self.get_logger().info(f"Sending msg: {mode_request_msg}")
-
-        # Publish the message
-        self.mode_request_pub.publish(mode_request_msg)
+        # Wait for robot to start using its tool
+        while not self.robot_tool_in_use:
+            self.get_logger().info(f"Resending msg: {mode_request_msg}")
+            self.mode_request_pub.publish(mode_request_msg)
+            time.sleep(1)  # Wait for a second before resending
 
         # Wait for robot to finish
         self._wait_for_robot_tool(mode_request_msg.robot_name)
         self.tool_done_event.clear()
-
 
         if quantitiy == 2:
             self.get_logger().info("Need to swap and redo last cmd")
@@ -453,29 +433,46 @@ class ConveyorAdapter(Node):
             swap_cmd_msg.name = "tool_cmd"
 
             if item_pos == "front":
-                swap_cmd_msg.value = "back_switch"
+                if dispense_item:
+                    swap_cmd_msg.value = "front_switch"
+                else:
+                    swap_cmd_msg.value = "back_switch"
             else:
-                swap_cmd_msg.value = "front_switch"
+                if dispense_item:
+                    swap_cmd_msg.value = "back_switch"
+                else:
+                    swap_cmd_msg.value = "front_switch"
 
             mode_request_msg.parameters = [swap_cmd_msg]
-            mode_request_msg.task_id += "-swap"
+            mode_request_msg.task_id = new_mode_id + "_swap"
 
-            self.mode_request_pub.publish(mode_request_msg)
+            # Wait for robot to start using its tool
+            while not self.robot_tool_in_use:
+                self.get_logger().info(f"Resending msg: {mode_request_msg}")
+                self.mode_request_pub.publish(mode_request_msg)
+                time.sleep(1)  # Wait for a second before resending
+
+            # Wait for robot to finish
             self._wait_for_robot_tool(mode_request_msg.robot_name)
             self.tool_done_event.clear()
 
 
             # Resend original command
             mode_request_msg.parameters = [tool_cmd_msg]
-            mode_request_msg.task_id += "-redo"
+            mode_request_msg.task_id = new_mode_id + "_redo"
 
-            self.mode_request_pub.publish(mode_request_msg)
+            # Wait for robot to start using its tool
+            while not self.robot_tool_in_use:
+                self.get_logger().info(f"Resending msg: {mode_request_msg}")
+                self.mode_request_pub.publish(mode_request_msg)
+                time.sleep(1)  # Wait for a second before resending
+
+            # Wait for robot to finish
             self._wait_for_robot_tool(mode_request_msg.robot_name)
             self.tool_done_event.clear()
         # Reset the state to idle after the robot tool operation is complete
-        if dispense_item:
+        with self.conveyor_state_lock:
             self.current_dispenser_state = 0
-        else:
             self.current_ingestor_state = 0
 
     def _wait_for_robot_tool(self, robot_id):
