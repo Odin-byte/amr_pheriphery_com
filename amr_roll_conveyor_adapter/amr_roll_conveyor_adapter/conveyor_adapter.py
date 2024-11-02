@@ -17,6 +17,7 @@ from rcl_interfaces.msg import ParameterDescriptor
 
 class ConveyorAdapter(Node):
     def __init__(self):
+        """Initializes the roll conveyor adapter node which allows RMF to control the roll conveyor handling dispenser and ingestor requests."""
         super().__init__("roll_conveyor_adapter")
 
         # Declare parameter for the configuration file path
@@ -125,8 +126,8 @@ class ConveyorAdapter(Node):
         self.publish_conveyor_state()
         with self.conveyor_state_lock:
             if self.current_dispenser_state == 1 or self.current_ingestor_state == 1:
-                self.get_logger().info(f"Current dispenser state: {self.current_dispenser_state} and current ingestor state: {self.current_ingestor_state}")
-                self.get_logger().info("Conveyor is currently busy. Skipping execution part...")
+                self.get_logger().debug(f"Current dispenser state: {self.current_dispenser_state} and current ingestor state: {self.current_ingestor_state}")
+                self.get_logger().debug("Conveyor is currently busy. Skipping execution part...")
                 return
 
         # Handle open request
@@ -143,7 +144,7 @@ class ConveyorAdapter(Node):
             time.sleep(1)
             
             self._turn_on_onboard_tool(self.is_dispense_request)
-            self.get_logger().info("Done waiting!")
+            self.get_logger().debug("Done waiting!")
             # Send cmd to turn off conveyor
             stop_req = SetAdvantechOutput.Request()
             stop_req.host = self.host
@@ -155,7 +156,7 @@ class ConveyorAdapter(Node):
             future.add_done_callback(self.conveyor_done_cb)
 
         else:
-            self.get_logger().info("Failed!")
+            self.get_logger().error("Failed!")
             if self.is_dispense_request == True:
                 self.send_dispenser_response(DispenserResult.FAILED)
             else:
@@ -165,7 +166,9 @@ class ConveyorAdapter(Node):
 
 
     def conveyor_done_cb(self, future):
-        """If request was sucessful return a response to the request feedback topic"""
+        """If request was sucessful return a response to the request feedback topic.
+        If not, return a failed response to the request feedback topic and set the conveyor state to offline.    
+        """
         if future.result().success:
 
             if self.is_dispense_request == True:
@@ -241,9 +244,11 @@ class ConveyorAdapter(Node):
             self.is_dispense_request = False
 
     def handle_dispense(self):
+        """Handles a open dispense request.
+        """
         self.send_dispenser_response(DispenserResult.ACKNOWLEDGED)
-
-        self.current_dispenser_state = 1
+        with self.conveyor_state_lock:
+            self.current_dispenser_state = 1
 
         # Send request for dispending an item to conveyor
         req_dispense = SetAdvantechOutput.Request()
@@ -256,9 +261,11 @@ class ConveyorAdapter(Node):
         future.add_done_callback(self.conveyor_start_cb)
 
     def handle_ingest(self):
+        """Handles a open ingest request.
+        """
         self.send_ingestor_response(IngestorResult.ACKNOWLEDGED)
-
-        self.current_ingestor_state = 1
+        with self.conveyor_state_lock:
+            self.current_ingestor_state = 1
 
         # Send request for ingesting an item 
         req_ingest = SetAdvantechOutput.Request()
@@ -272,6 +279,11 @@ class ConveyorAdapter(Node):
 
 
     def send_dispenser_response(self, status):
+        """Sending a response msg to the dispenser result topic
+
+        Args:
+            status (Dispenser Result Enum): Result of the request
+        """
         response_msg = DispenserResult()
         response_msg.status = status
         response_msg.time = self.get_clock().now().to_msg()
@@ -281,6 +293,11 @@ class ConveyorAdapter(Node):
         self.dispense_result_pub.publish(response_msg)
 
     def send_ingestor_response(self, status):
+        """Sending a response msg to the ingestor result topic
+
+        Args:
+            status (Ingestor Result Enum): Result of the request
+        """
         response_msg = IngestorResult()
         response_msg.status = status
         response_msg.time = self.get_clock().now().to_msg()
@@ -290,6 +307,7 @@ class ConveyorAdapter(Node):
         self.ingest_result_pub.publish(response_msg)
 
     def publish_conveyor_state(self): 
+        """Publishes the current state of the conveyor to the respective topics."""
         # Publish the dispenser state of the conveyor
         with self.conveyor_state_lock:
             dispenser_state_msg = DispenserState()
@@ -328,6 +346,11 @@ class ConveyorAdapter(Node):
         self.ingestor_state_pub.publish(ingestor_state_msg)
 
     def _fleet_state_cb(self, msg):
+        """Callback function for the fleet state subscriber. This is used to control the feedback for the robot tool usage.
+
+        Args:
+            msg (RMF Fleet State Msg): RMF ROS2 msg containing the current state of the fleets
+        """
         self.latest_fleet_state = msg
         with self.conveyor_state_lock:
             # Return early if there is no open request
@@ -357,11 +380,11 @@ class ConveyorAdapter(Node):
                 if robot.mode.mode == 10:  # Robot is using tool
                     if not self.robot_tool_in_use:
                         self.robot_tool_in_use = True
-                        self.get_logger().info(f"Robot {robot.name} started using tool.")
+                        self.get_logger().debug(f"Robot {robot.name} started using tool.")
                 elif robot.mode.mode != 10:  # Robot is done using tool
                     if self.robot_tool_in_use:
                         self.robot_tool_in_use = False
-                        self.get_logger().info(f"Robot {robot.name} finished using tool.")
+                        self.get_logger().debug(f"Robot {robot.name} finished using tool.")
                         self.tool_done_event.set()  # Notify waiting threads
                 else:
                     self.get_logger().debug(f"Robot {robot.name} is in an unexpected mode: {robot.mode.mode}")
@@ -370,7 +393,12 @@ class ConveyorAdapter(Node):
         self.get_logger().debug(f"Fleet state updated: {self.latest_fleet_state}")
 
     
-    def _turn_on_onboard_tool(self, dispense_item):
+    def _turn_on_onboard_tool(self, dispense_item: bool):
+        """Sending a request to the robot to turn on its onboard tool. The command is determined by the dispense_item flag and the current request.
+
+        Args:
+            dispense_item (Bool): If True, the robot is requested to dispense an item. If False, the robot is requested to ingest an item.
+        """
         # Tell the robot to dock with the correct orientation based on the item / slot in the request
         mode_request_msg = ModeRequest()
         new_mode_id = str(uuid.uuid4()) + self.conveyor_id
@@ -419,7 +447,7 @@ class ConveyorAdapter(Node):
 
         # Wait for robot to start using its tool
         while not self.robot_tool_in_use:
-            self.get_logger().info(f"Resending msg: {mode_request_msg}")
+            self.get_logger().debug(f"Resending msg: {mode_request_msg}")
             self.mode_request_pub.publish(mode_request_msg)
             time.sleep(1)  # Wait for a second before resending
 
@@ -428,7 +456,7 @@ class ConveyorAdapter(Node):
         self.tool_done_event.clear()
 
         if quantitiy == 2:
-            self.get_logger().info("Need to swap and redo last cmd")
+            self.get_logger().debug("Need to swap and redo last cmd")
             swap_cmd_msg = ModeParameter()
             swap_cmd_msg.name = "tool_cmd"
 
@@ -448,7 +476,7 @@ class ConveyorAdapter(Node):
 
             # Wait for robot to start using its tool
             while not self.robot_tool_in_use:
-                self.get_logger().info(f"Resending msg: {mode_request_msg}")
+                self.get_logger().debug(f"Resending msg: {mode_request_msg}")
                 self.mode_request_pub.publish(mode_request_msg)
                 time.sleep(1)  # Wait for a second before resending
 
@@ -463,7 +491,7 @@ class ConveyorAdapter(Node):
 
             # Wait for robot to start using its tool
             while not self.robot_tool_in_use:
-                self.get_logger().info(f"Resending msg: {mode_request_msg}")
+                self.get_logger().debug(f"Resending msg: {mode_request_msg}")
                 self.mode_request_pub.publish(mode_request_msg)
                 time.sleep(1)  # Wait for a second before resending
 
@@ -475,15 +503,20 @@ class ConveyorAdapter(Node):
             self.current_dispenser_state = 0
             self.current_ingestor_state = 0
 
-    def _wait_for_robot_tool(self, robot_id):
+    def _wait_for_robot_tool(self, robot_id:str):
+        """Function to wait for the threading event to be set, indicating the robot has finished using its tool.
+
+        Args:
+            robot_id (str): Name of the robot to wait for
+        """
     # Check if the event is already set, which indicates the tool is already done being used
         if not self.tool_done_event.is_set():
-            self.get_logger().info(f"Waiting for Robot {robot_id} to finish using its tool.")
+            self.get_logger().debug(f"Waiting for Robot {robot_id} to finish using its tool.")
             self.tool_done_event.wait()  # This will block until the tool is no longer in use
-            self.get_logger().info(f"Robot {robot_id} has finished using its tool.")
+            self.get_logger().debug(f"Robot {robot_id} has finished using its tool.")
         else:
             # If the event is already set, the robot has already completed the tool action
-            self.get_logger().info(f"Robot {robot_id} has already finished using its tool.")
+            self.get_logger().debug(f"Robot {robot_id} has already finished using its tool.")
         
         # Optionally clear the event after it's been acknowledged
         self.tool_done_event.clear()
