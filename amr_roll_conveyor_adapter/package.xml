@@ -3,7 +3,7 @@
 <package format="3">
   <name>amr_roll_conveyor_adapter</name>
   <version>0.0.0</version>
-  <description>An RMF door adapter for advantech box controlled roller conveyors</description>
+  <description>An RMF adapter for advantech box controlled roll conveyors</description>
   <maintainer email="dominik.werman@4am-robotics.com">Dominik Werman</maintainer>
   <license>Apache License 2.0</license>
 
