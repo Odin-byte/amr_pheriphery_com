@@ -1,6 +1,6 @@
 # AMR Pheriphery Communication
 
-This repository contains various ROS2 packages designed to facilitate communication between different peripheral devices and the RMF (Robotics Middleware Framework) framework.
+This repository contains various ROS2 packages designed to facilitate communication between different peripheral devices and RMF (Robotics Middleware Framework).
 
 ## Overview
 
